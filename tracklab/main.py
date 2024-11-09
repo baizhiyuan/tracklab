@@ -1,18 +1,25 @@
 import os
+import sys
 import rich.logging
 import torch
 import hydra
 import warnings
 import logging
+import json
+import pandas as pd
 
-from tracklab.utils import monkeypatch_hydra, \
-    progress  # needed to avoid complex hydra stacktraces when errors occur in "instantiate(...)"
+from tracklab.utils import monkeypatch_hydra, progress  # needed to avoid complex hydra stacktraces when errors occur in "instantiate(...)"
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from tracklab.datastruct import TrackerState
 from tracklab.pipeline import Pipeline
 from tracklab.utils import wandb
+from omegaconf import DictConfig
 
+# 确保 tracklab 模块路径已添加
+sys.path.append("/garage/projects/video-LLM/soccernet_bzy")  # 主项目路径
+sys.path.append("/garage/projects/video-LLM/soccernet_bzy/sn-gamestate/plugins/calibration")  # 主项目路径
+sys.path.append("/garage/projects/video-LLM/soccernet_bzy/tracklab")  # tracklab 路径
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
 log = logging.getLogger(__name__)
@@ -24,6 +31,9 @@ warnings.filterwarnings("ignore")
 def main(cfg):
     device = init_environment(cfg)
 
+    # 设置CuDNN加速
+    torch.backends.cudnn.benchmark = True
+
     # Instantiate all modules
     tracking_dataset = instantiate(cfg.dataset)
     evaluator = instantiate(cfg.eval, tracking_dataset=tracking_dataset)
@@ -31,8 +41,9 @@ def main(cfg):
     modules = []
     if cfg.pipeline is not None:
         for name in cfg.pipeline:
-            module = cfg.modules[name]
-            inst_module = instantiate(module, device=device, tracking_dataset=tracking_dataset)
+            module_cfg = cfg.modules[name]
+            # 传递device参数，确保模块在GPU上运行
+            inst_module = instantiate(module_cfg, device=device, tracking_dataset=tracking_dataset)
             modules.append(inst_module)
 
     pipeline = Pipeline(models=modules)
@@ -44,28 +55,46 @@ def main(cfg):
 
     # Test tracking
     if cfg.test_tracking:
-        log.info(f"Starting tracking operation on {cfg.dataset.eval_set} set.")
+        # 确保 cfg.dataset.eval_set 是一个列表
+        if isinstance(cfg.dataset.eval_set, str):
+            eval_sets = [cfg.dataset.eval_set]
+        else:
+            eval_sets = cfg.dataset.eval_set
 
-        # Init tracker state and tracking engine
-        tracking_set = tracking_dataset.sets[cfg.dataset.eval_set]
-        tracker_state = TrackerState(tracking_set, pipeline=pipeline, **cfg.state)
-        tracking_engine = instantiate(
-            cfg.engine,
-            modules=pipeline,
-            tracker_state=tracker_state,
-        )
+        for split_name in eval_sets:
+            if split_name not in tracking_dataset.sets:
+                raise KeyError(f"Trying to access a '{split_name}' split of the dataset that is not available. Available splits are {list(tracking_dataset.sets.keys())}. Make sure this split name is correct or is available in the dataset folder.")
 
-        # Run tracking and visualization
-        tracking_engine.track_dataset()
+            log.info(f"Starting tracking operation on '{split_name}' set.")
 
-        # Evaluation
-        evaluate(cfg, evaluator, tracker_state)
+            # Init tracker state and tracking engine
+            tracking_set = tracking_dataset.sets[split_name]
+            tracker_state = TrackerState(tracking_set, pipeline=pipeline, **cfg.state)
+            tracking_engine = instantiate(
+                cfg.engine,
+                modules=pipeline,
+                tracker_state=tracker_state,
+            )
 
-        # Save tracker state
-        if tracker_state.save_file is not None:
-            log.info(f"Saved state at : {tracker_state.save_file.resolve()}")
+            # 调整批量大小，避免显存溢出
+            adjust_batch_size(tracker_state, device)
 
-    close_enviroment()
+            # Run tracking and visualization
+            tracking_engine.track_dataset()
+
+            # Evaluation
+            evaluate(cfg, evaluator, tracker_state)
+
+            # 在保存之前，移除embeddings数据
+            # if not cfg.state.get('save_embeddings', True):
+            remove_embeddings_from_tracker_state(tracker_state)
+
+            # Save tracker state
+            if tracker_state.save_file is not None:
+                tracker_state.save(tracker_state.save_file)
+                log.info(f"Saved state at : {tracker_state.save_file.resolve()}")
+
+    close_environment()
 
     return 0
 
@@ -80,25 +109,28 @@ def init_environment(cfg):
     # For Hydra and Slurm compatibility
     progress.use_rich = cfg.use_rich
     set_sharing_strategy()  # Do not touch
+
+    # 设置设备为GPU（如果可用）
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info(f"Using device: '{device}'.")
+
     wandb.init(cfg)
     if cfg.print_config:
         log.info(OmegaConf.to_yaml(cfg))
     if cfg.use_rich:
         for handler in log.root.handlers:
-            if type(handler) is logging.StreamHandler:
+            if isinstance(handler, logging.StreamHandler):
                 handler.setLevel(logging.ERROR)
         log.root.addHandler(rich.logging.RichHandler(level=logging.INFO))
     else:
         # TODO : Fix for mmcv fix. This should be done in a nicer way
         for handler in log.root.handlers:
-            if type(handler) is logging.StreamHandler:
+            if isinstance(handler, logging.StreamHandler):
                 handler.setLevel(logging.INFO)
     return device
 
 
-def close_enviroment():
+def close_environment():
     wandb.finish()
 
 
@@ -106,13 +138,83 @@ def evaluate(cfg, evaluator, tracker_state):
     if cfg.get("eval_tracking", True) and cfg.dataset.nframes == -1:
         log.info("Starting evaluation.")
         evaluator.run(tracker_state)
-    elif cfg.get("eval_tracking", True) == False:
+    elif not cfg.get("eval_tracking", True):
         log.warning("Skipping evaluation because 'eval_tracking' was set to False.")
     else:
         log.warning(
             "Skipping evaluation because only part of video was tracked (i.e. 'cfg.dataset.nframes' was not set "
             "to -1)"
         )
+
+
+def remove_embeddings_from_tracker_state(tracker_state):
+    """
+    在保存之前移除tracker_state中的embeddings数据，以减少文件大小
+    """
+    # 如果embeddings存储在tracker_state的属性中
+    if hasattr(tracker_state, 'embeddings'):
+        tracker_state.embeddings = None
+
+    # 清除detections中的embeddings
+    if hasattr(tracker_state, 'detections'):
+        if isinstance(tracker_state.detections, pd.DataFrame):
+            if 'embeddings' in tracker_state.detections.columns:
+                tracker_state.detections = tracker_state.detections.drop(columns=['embeddings'])
+        elif isinstance(tracker_state.detections, list):
+            for detection in tracker_state.detections:
+                if 'embeddings' in detection:
+                    del detection['embeddings']
+
+    # 清除tracklets中的embeddings
+    if hasattr(tracker_state, 'tracklets'):
+        for tracklet in tracker_state.tracklets:
+            if hasattr(tracklet, 'embedding'):
+                tracklet.embedding = None
+
+    log.info("Removed embeddings from tracker_state to reduce file size.")
+
+
+def adjust_batch_size(tracker_state, device):
+    """
+    根据可用的显存大小，调整批量大小，避免显存溢出
+    """
+    if device == "cuda":
+        try:
+            total_memory = torch.cuda.get_device_properties(0).total_memory
+            reserved_memory = torch.cuda.memory_reserved(0)
+            allocated_memory = torch.cuda.memory_allocated(0)
+            available_memory = total_memory - (reserved_memory + allocated_memory)
+            log.info(f"Total GPU memory: {total_memory / (1024 ** 3):.2f} GB")
+            log.info(f"Reserved GPU memory: {reserved_memory / (1024 ** 3):.2f} GB")
+            log.info(f"Allocated GPU memory: {allocated_memory / (1024 ** 3):.2f} GB")
+            log.info(f"Available GPU memory: {available_memory / (1024 ** 3):.2f} GB")
+
+            # 根据可用显存，计算允许的最大批量大小
+            # RTX 4090 有24GB显存，保留一定余量
+            approximate_memory_per_sample = 40 * 1024 * 1024  # 40MB
+            max_allowed_batch_size = int(available_memory / approximate_memory_per_sample)
+            max_allowed_batch_size = max(2, max_allowed_batch_size)  # 保证至少为1
+            log.info(f"Calculated max allowed batch size: {max_allowed_batch_size}")
+
+            # 为了避免某些模块的 batch_size 太大，可以设置一个合理的上限
+            # 设定调整后的批量大小为 min(original, max_allowed_batch_size)
+            for module in tracker_state.pipeline.models:
+                if hasattr(module, 'batch_size'):
+                    original_batch_size = module.batch_size
+                    adjusted_batch_size = min(original_batch_size, max_allowed_batch_size)
+                    if adjusted_batch_size < original_batch_size:
+                        log.warning(f"Reducing batch size for module {module.__class__.__name__} from {original_batch_size} to {adjusted_batch_size} to fit GPU memory.")
+                    module.batch_size = adjusted_batch_size
+                    log.info(f"Set batch size to {adjusted_batch_size} for module {module.__class__.__name__}")
+        except Exception as e:
+            log.error(f"Failed to adjust batch size: {e}")
+            # 在发生错误时，可以选择不调整批量大小
+    else:
+        # 如果使用CPU，设置批量大小为1
+        for module in tracker_state.pipeline.models:
+            if hasattr(module, 'batch_size'):
+                module.batch_size = 1
+                log.info(f"Set batch size to 1 for module {module.__class__.__name__} on CPU")
 
 
 if __name__ == "__main__":

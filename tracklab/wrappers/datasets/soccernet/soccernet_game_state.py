@@ -7,6 +7,7 @@ import pandas as pd
 import json
 
 from pathlib import Path
+from rich import print
 from SoccerNet.Downloader import SoccerNetDownloader
 from rich.prompt import Confirm
 from tracklab.datastruct import TrackingDataset, TrackingSet
@@ -21,22 +22,27 @@ class SoccerNetGameState(TrackingDataset):
     def __init__(self,
                  dataset_path: str,
                  nvid: int = -1,
-                 vids_dict: list = None,
+                 vids_dict: dict = None,
                  *args, **kwargs):
         self.dataset_path = Path(dataset_path)
-        if not self.dataset_path.exists():
-            download_dataset(self.dataset_path)
-        assert self.dataset_path.exists(), f"'{self.dataset_path}' directory does not exist. Please check the path or download the dataset following the instructions here: https://github.com/SoccerNet/sn-gamestate"
+        # if not self.dataset_path.exists():
+        #     download_dataset(self.dataset_path)
+        # assert self.dataset_path.exists(), f"'{self.dataset_path}' directory does not exist. Please check the path or download the dataset."
 
         sets = {}
-        for split in ["train", "valid", "test", "challenge"]:
-            if os.path.exists(self.dataset_path / split):
-                sets[split] = load_set(self.dataset_path / split, nvid, vids_dict.get(split, []))
-            else:
-                log.warning(f"Warning: The '{split}' set does not exist in the SoccerNetGS dataset at '{self.dataset_path}'. "
-                            f"Please check the path or download the dataset following the instructions here: https://github.com/soccerNet/sn-gamestate#manual-downloading-of-soccernet-gamestate")
+        # Iterate over the leagues specified in vids_dict or eval_set
+        if vids_dict is None or len(vids_dict) == 0:
+            leagues = [d.name for d in self.dataset_path.iterdir() if d.is_dir()]
+        else:
+            leagues = vids_dict.keys()
 
-        # We pass 'nvid=-1', 'vids_dict=None' because video subsampling is already done in the load_set function
+        for league in leagues:
+            league_path = self.dataset_path / league
+            if not league_path.exists():
+                continue
+            sets[league] = load_set(str(league_path), nvid, vids_dict.get(league))
+
+        # Initialize TrackingDataset with the sets
         super().__init__(dataset_path, sets, nvid=-1, vids_dict=None, *args, **kwargs)
 
     def process_trackeval_results(self, results, dataset_config, eval_config):
@@ -200,189 +206,147 @@ def read_json_file(file_path):
     return file_json
 
 def video_dir_to_dfs(args):
-    dataset_path = args['dataset_path']
+    season_path = args['dataset_path']
     video_folder = args['video_folder']
-    split = args['split']
-    split_id = ["train", "valid", "test", "challenge"].index(split) + 1
-    annotation_pitch_camera_df = None
+    league = args['league']
+    season = args['season']
+
+    video_folder_path = os.path.join(season_path, video_folder)
+    img_folder_path = os.path.join(video_folder_path, 'img1')
+
+    # 获取联赛文件夹路径
+    league_path = os.path.dirname(season_path)
+
+    # 读取 sequences_info.json
+    sequences_info_path = os.path.join(league_path, 'sequences_info.json')
+    if not os.path.exists(sequences_info_path):
+        log.warning(f"在 {league_path} 中未找到 'sequences_info.json'。")
+        return None
+
+    with open(sequences_info_path, 'r') as f:
+        sequences_info = json.load(f)
+
+    # 提取对应联赛的比赛信息
+    match_entries = sequences_info.get(league, [])
+
+    # 构建匹配名称
+    match_name = f"{season}/{video_folder}"
+
+    # 找到与当前视频文件夹对应的比赛条目
+    match_entry = next(
+        (entry for entry in match_entries if entry['name'] == match_name),
+        None
+    )
+
+    if match_entry is None:
+        # 未找到，记录警告
+        log.warning(f"未找到视频文件夹 {match_name} 的序列信息")
+        return None
+
+    video_id = str(match_entry['id'])
+    nframes = match_entry['n_frames']
+
+    # 创建 video_metadata
+    video_metadata = {
+        'id': video_id,
+        'name': match_entry['name'],
+        'nframes': nframes,
+    }
+
+    # 创建 image_metadata
+    nframes = int(nframes)
+    img_metadata_df = pd.DataFrame({
+        'frame': [i for i in range(0, nframes)],
+        'id': [f"{video_id}{i:06d}" for i in range(1, nframes + 1)],
+        'video_id': video_id,
+        'file_path': [os.path.join(img_folder_path, f'{i:06d}.jpg') for i in range(1, nframes + 1)],
+    })
+
+    # 没有检测数据，设置为 None
     detections_df = None
+    annotations_pitch_camera_df = None
     video_level_categories = []
-    video_folder_path = os.path.join(dataset_path, video_folder)
-    if os.path.isdir(video_folder_path):
-        if not (Path(video_folder_path) / "Labels-GameState.json").exists():
-            img_folder_path = os.path.join(video_folder_path, 'img1')
-            video_id = str(video_folder.split('-')[-1])
-            video_metadata = {
-                'id': video_id,
-                'name': video_folder,
-            }
-            
-            nframes = len(os.listdir(img_folder_path))
-            img_metadata_df = pd.DataFrame({
-                'frame': [i for i in range(0, nframes)],
-                'id': [f"{split_id}{video_id}{i:06d}" for i in range(1, nframes + 1)],
-                'video_id': video_id,
-                'file_path': [os.path.join(img_folder_path, f'{i:06d}.jpg') for i in
-                            range(1, nframes + 1)],
-            })
-            
-        else:
-            # Read the gamestate.json file
-            gamestate_path = os.path.join(video_folder_path, 'Labels-GameState.json')
-            gamestate_data = read_json_file(gamestate_path)
 
-            info_data = gamestate_data['info']
-            images_data = gamestate_data['images']
-            annotations_data = gamestate_data['annotations']
-            categories_data = gamestate_data['categories']
-            video_id = info_data.get("id", str(video_folder.split('-')[-1]))
+    return {
+        "video_metadata": video_metadata,
+        "image_metadata": img_metadata_df,
+        "detections": detections_df,
+        "annotations_pitch_camera": annotations_pitch_camera_df,
+        "video_level_categories": video_level_categories,
+    }
 
-            detections_df, annotation_pitch_camera_df, video_level_categories = dict_to_df_detections(annotations_data, categories_data)
-            # detections_df['image_id'] = detections_df['image_id'] - 1 + image_counter
-            detections_df['video_id'] = video_id
-            detections_df['person_id'] = detections_df['track_id'].astype(str) + detections_df['video_id'].astype(str)
-            detections_df['visibility'] = 1
-            # detections_list.append(detections_df)
-
-            # Append video metadata
-            nframes = int(info_data.get('seq_length', 0))
-            video_metadata = {
-                'id': video_id,
-                'name': info_data.get('name', ''),
-                'nframes': nframes,
-                'frame_rate': int(info_data.get('frame_rate', 0)),
-                'seq_length': nframes,
-                'im_width': int(images_data[0].get('width', 0)),
-                'im_height': int(images_data[0].get('height', 0)),
-                'game_id': int(info_data.get('gameID', 0)),
-                'action_position': int(info_data.get('action_position', 0)),
-                'action_class': info_data.get('action_class', ''),
-                'visibility': info_data.get('visibility', ''),
-                'clip_start': int(info_data.get('clip_start', 0)),
-                'game_time_start': info_data.get('game_time_start', ' - ').split(' - ')[1],
-                # Remove the half period index
-                'game_time_stop': info_data.get('game_time_stop', ' - ').split(' - ')[1],  # Remove the half period index
-                'clip_stop': int(info_data.get('clip_stop', 0)),
-                'num_tracklets': int(info_data.get('num_tracklets', 0)),
-                'half_period_start': int(info_data.get('game_time_start', '0 - ').split(' - ')[0]),
-                # Add the half period start column
-                'half_period_stop': int(info_data.get('game_time_stop', '0 - ').split(' - ')[0]),
-                # Add the half period stop column
-            }
-            # categories_list += video_level_categories
-            img_folder_path = os.path.join(video_folder_path, info_data.get('im_dir', 'img1'))
-            img_metadata_df = pd.DataFrame({
-                'frame': [i for i in range(0, nframes)],
-                'id': [i['image_id'] for i in images_data],
-                # 'id': [image_counter + i for i in range(0, nframes)],
-                'video_id': video_id,
-                'file_path': [os.path.join(img_folder_path, i['file_name']) for i in
-                            images_data],
-                'is_labeled': [i['is_labeled'] for i in images_data],
-            })
-            annotation_pitch_camera_df["video_id"] = video_id
-        
-        return {
-            "video_metadata": video_metadata,
-            "image_metadata": img_metadata_df,
-            "detections": detections_df,
-            "annotations_pitch_camera": annotation_pitch_camera_df,
-            "video_level_categories": video_level_categories,
-        }
-    
 def load_set(dataset_path, nvid=-1, vids_filter_set=None):
     video_metadatas_list = []
     image_metadata_list = []
     annotations_pitch_camera_list = []
     detections_list = []
     categories_list = []
-    split = os.path.basename(dataset_path)  # Get the split name from the dataset path
-    video_list = os.listdir(dataset_path)
-    video_list.sort()
+    league_name = os.path.basename(dataset_path)  # e.g., 'spain_laliga'
+    season_list = os.listdir(dataset_path)
+    season_list.sort()
 
-    if vids_filter_set is not None and len(vids_filter_set) > 0:
-        missing_videos = set(vids_filter_set) - set(video_list)
-        if missing_videos:
-            log.warning(
-                f"Warning: The following videos provided in config 'dataset.vids_dict' do not exist in {split} set: {missing_videos}")
+    for season in season_list:
+        season_path = os.path.join(dataset_path, season)
+        if not os.path.isdir(season_path):
+            continue
 
-        video_list = [video for video in video_list if video in vids_filter_set]
-        
-    if nvid > 0:
-        video_list = video_list[:nvid]
+        match_list = os.listdir(season_path)
+        match_list.sort()
+        match_list = [m for m in match_list if os.path.isdir(os.path.join(season_path, m))]
 
-    assert len(video_list) != 0, f"After applying filtering, no videos left in the '{split}' set, please fix the 'dataset.vids_dict' config."
+        # 应用 'vids_filter_set'（如果提供）
+        if vids_filter_set is not None and len(vids_filter_set) > 0:
+            match_list = [m for m in match_list if m in vids_filter_set]
 
-    pool = Pool()
-    args = [{"dataset_path": dataset_path, "video_folder": video_folder, "split": split} for video_folder in video_list]
-    for result in progress(pool.imap_unordered(video_dir_to_dfs, args), total=len(args), desc=f"Loading SoccerNetGS '{split}' set videos"):
-        if result is not None:
-            video_metadatas_list.append(result["video_metadata"])
-            image_metadata_list.append(result["image_metadata"])
-            detections_list.append(result["detections"])
-            annotations_pitch_camera_list.append(result["annotations_pitch_camera"])
-            categories_list += result["video_level_categories"]
+        if nvid > 0:
+            match_list = match_list[:nvid]
 
-    if len(categories_list) == 0:
-        video_metadata = pd.DataFrame(video_metadatas_list)
-        image_metadata = pd.concat(image_metadata_list, ignore_index=True)
-        detections = None
-        image_metadata.set_index("id", drop=False, inplace=True)
-        image_gt = image_metadata.copy()
-        video_metadata.set_index("id", drop=False, inplace=True)
-    else:
-        categories_list = [{'id': i + 1, 'name': category, 'supercategory': 'person'} for i, category in
-                        enumerate(sorted(set(categories_list)))]
+        if len(match_list) == 0:
+            log.warning(f"在 '{league_name}' 的 '{season}' 赛季中，应用过滤后没有剩余的比赛。")
+            continue  # 跳过没有比赛的赛季
 
-        # Assign the categories to the video metadata  # TODO at dataset level?
-        for video_metadata in video_metadatas_list:
-            video_metadata['categories'] = categories_list
+        args_list = []
+        for match_folder in match_list:
+            args = {
+                'dataset_path': season_path,
+                'video_folder': match_folder,
+                'league': league_name,
+                'season': season,
+            }
+            args_list.append(args)
 
-        # Concatenate dataframes
-        video_metadata = pd.DataFrame(video_metadatas_list)
-        image_metadata = pd.concat(image_metadata_list, ignore_index=True)
+        pool = Pool()
+        for result in progress(pool.imap_unordered(video_dir_to_dfs, args_list), total=len(args_list), desc=f"加载 '{league_name}/{season}' 赛季的比赛"):
+            if result is not None:
+                video_metadatas_list.append(result["video_metadata"])
+                image_metadata_list.append(result["image_metadata"])
+                detections_list.append(result["detections"])
+                annotations_pitch_camera_list.append(result["annotations_pitch_camera"])
+                categories_list += result["video_level_categories"]
+
+    if len(video_metadatas_list) == 0:
+        raise ValueError(f"在联赛 '{league_name}' 中未找到任何比赛。请检查您的数据集路径和结构。")
+
+    video_metadata = pd.DataFrame(video_metadatas_list)
+    image_metadata = pd.concat(image_metadata_list, ignore_index=True)
+
+    # 过滤 None 值
+    detections_list = [d for d in detections_list if d is not None]
+    annotations_pitch_camera_list = [a for a in annotations_pitch_camera_list if a is not None]
+
+    if len(detections_list) > 0:
         detections = pd.concat(detections_list, ignore_index=True)
+    else:
+        detections = None
 
-        # Person id as unique 0-based index
-        detections['person_id'] = pd.factorize(detections['person_id'])[0]
+    if len(annotations_pitch_camera_list) > 0:
+        annotations_pitch_camera = pd.concat(annotations_pitch_camera_list, ignore_index=True)
+    else:
+        annotations_pitch_camera = None
 
-        # Use video_id, image_id, track_id as unique id
-        detections = detections.sort_values(by=['video_id', 'image_id', 'track_id'], ascending=[True, True, True])
-        detections['id'] = detections['video_id'].astype(str) + "_" + detections['image_id'].astype(str) + "_" + detections['track_id'].astype(str)
-
-        # add camera parameters and pitch as ground truth
-        pitch_camera = pd.concat(annotations_pitch_camera_list, ignore_index=True)
-        pitch_gt = (pitch_camera[["image_id", "video_id", "lines"]]
-                    [pitch_camera.supercategory=="pitch"].set_index("image_id", drop=True))
-        # camera_gt = (pitch_camera[["image_id", "parameters", "relative_mean_reproj", "accuracy@5"]]
-        #             [pitch_camera.supercategory=="camera"].set_index("image_id", drop=True))
-        # image_gt = pitch_gt.join(camera_gt)
-        image_gt = pitch_gt
-
-        # Add category id to detections
-        category_to_id = {category['name']: category['id'] for category in categories_list}
-        detections['category_id'] = detections['category'].apply(lambda x: category_to_id[x])
-
-
-        detections.set_index("id", drop=False, inplace=True)
-        image_metadata.set_index("id", drop=False, inplace=True)
-        video_metadata.set_index("id", drop=False, inplace=True)
-
-
-        # Reorder columns in dataframes
-        video_metadata_columns = ['name', 'nframes', 'frame_rate', 'seq_length', 'im_width', 'im_height', 'game_id', 'action_position',
-                                'action_class', 'visibility', 'clip_start', 'game_time_start', 'clip_stop', 'game_time_stop',
-                                'num_tracklets',
-                                'half_period_start', 'half_period_stop', 'categories']
-        video_metadata_columns.extend(set(video_metadata.columns) - set(video_metadata_columns))
-        video_metadata = video_metadata[video_metadata_columns]
-        image_metadata_columns = ['video_id', 'frame', 'file_path', 'is_labeled']
-        image_metadata_columns.extend(set(image_metadata.columns) - set(image_metadata_columns))
-        image_metadata = image_metadata[image_metadata_columns]
-        detections_column_ordered = ['image_id', 'video_id', 'track_id', 'person_id', 'bbox_ltwh', 'visibility']
-        detections_column_ordered.extend(set(detections.columns) - set(detections_column_ordered))
-        detections = detections[detections_column_ordered]
-        detections['bbox_conf'] = 1
+    image_metadata.set_index("id", drop=False, inplace=True)
+    image_gt = image_metadata.copy()
+    video_metadata.set_index("id", drop=False, inplace=True)
 
     return TrackingSet(
         video_metadata,
@@ -391,7 +355,7 @@ def load_set(dataset_path, nvid=-1, vids_filter_set=None):
         image_gt,
     )
 
-def download_dataset(dataset_path, splits=("train", "valid", "test", "challenge")):
+def download_dataset(dataset_path, splits=("train", "valid", "test")):
     mySoccerNetDownloader = SoccerNetDownloader(LocalDirectory=str(dataset_path))
     download = Confirm.ask("Do you want to download the "
                            "datasets automatically ? [i]"

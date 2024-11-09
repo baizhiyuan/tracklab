@@ -4,9 +4,9 @@ nframes: -1                                 # "-1" to process all the frames for
 eval_set: "val"
 
 vids_dict:                                  # video names to use for each split (train/val/test/..). This is an example, the exact split name depends on the dataset
-  train: []
-  val: []  # leave empty to use all videos
-  test: []
+  # train: []
+  # val: []  # leave empty to use all videos
+  # test: []
 
 track_eval:
   dataset_class: MotChallenge2DBox

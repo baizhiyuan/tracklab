@@ -5,6 +5,8 @@ import hashlib
 from tqdm import tqdm
 
 def download_file(url, local_filename, md5=None):
+    # session = requests.Session()
+    # response = session.get(url, stream=True, timeout=10, verify=False)
     # NOTE the stream=True parameter below
     if Path(local_filename).exists():
         if md5 is not None:
