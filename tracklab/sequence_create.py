@@ -2,7 +2,7 @@ import os
 import json
 
 # Path to the video_bzy directory
-video_bzy_dir = "/garage#2/projects/data/video_bzy"
+video_bzy_dir = "/garage#2/projects/data/video_fps_1"
 
 # Iterate through subdirectories under video_bzy
 for league_dir in os.listdir(video_bzy_dir):
