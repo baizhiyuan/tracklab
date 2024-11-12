@@ -270,70 +270,41 @@ class TrackerState(AbstractContextManager):
                 [self.image_pred, image_metadata]
             )
 
-    # def save(self):
-    #     """
-    #     Saves a pickle in a zip file if the video_id is not yet stored in it.
-    #     """
-    #     if self.save_file is None:
-    #         return
-    #     assert self.video_id is not None, "Save can only be called in a contextmanager"
-    #     assert (
-    #             self.detections_pred is not None
-    #     ), "The detections_pred should not be empty when saving"
-    #     if f"{self.video_id}.pkl" not in self.zf["save"].namelist():
-    #         if "summary.json" not in self.zf["save"].namelist():
-    #             with self.zf["save"].open("summary.json", "w", force_zip64=True) as fp:
-    #                 summary = {"columns": {
-    #                     "detection": list(self.detections_pred.columns),
-    #                     "image": list(self.image_pred.columns),
-    #                     }
-    #                 }
-    #                 summary_bytes = json.dumps(summary, ensure_ascii=False, indent=4).encode(
-    #                     'utf-8')
-    #                 fp.write(summary_bytes)
-    #         if not self.detections_pred.empty:
-    #             # TODO: delete the big file
-    #             with self.zf["save"].open(f"{self.video_id}.pkl", "w", force_zip64=True) as fp:
-    #                 detections_pred = self.detections_pred[
-    #                     self.detections_pred.video_id == self.video_id
-    #                     ]
-    #                 pickle.dump(detections_pred, fp, protocol=pickle.DEFAULT_PROTOCOL)
-    #         if not self.image_pred.empty:
-    #             with self.zf["save"].open(f"{self.video_id}_image.pkl", "w", force_zip64=True) as fp:
-    #                 image_pred = self.image_pred[
-    #                     self.image_pred.video_id == self.video_id
-    #                 ]
-    #                 pickle.dump(image_pred, fp, protocol=pickle.DEFAULT_PROTOCOL)
-    #     else:
-    #         log.info(f"{self.video_id} already exists in {self.save_file} file")
-    def save(self, filename=None):
-        if self.save_file is None and filename is None:
+    def save(self):
+        """
+        Saves a pickle in a zip file if the video_id is not yet stored in it.
+        """
+        if self.save_file is None:
             return
-        if filename is not None:
-            self.save_file = Path(filename)
-        if self.video_id is None:
-            return
-
-        # 从 detections_pred 中筛选并选择需要的列
-        detections_pred = self.detections_pred.loc[
-            self.detections_pred.video_id == self.video_id,
-            ['image_id', 'bbox_pitch']
-        ]
-
-        # 检查是否缺少所需的列
-        required_columns = ['image_id', 'bbox_pitch']
-        missing_columns = [col for col in required_columns if col not in detections_pred.columns]
-        if missing_columns:
-            log.error(f"Missing columns in detections_pred: {missing_columns}")
-            return
-
-        # 确保保存的文件夹存在
-        self.save_file.parent.mkdir(parents=True, exist_ok=True)
-
-        # 保存为 JSON 文件
-        json_file = self.save_file.with_suffix('.json')
-        detections_pred.to_json(json_file, orient='records', lines=True)
-        log.info(f"Saved detections_pred to {json_file}")
+        assert self.video_id is not None, "Save can only be called in a contextmanager"
+        assert (
+                self.detections_pred is not None
+        ), "The detections_pred should not be empty when saving"
+        if f"{self.video_id}.pkl" not in self.zf["save"].namelist():
+            if "summary.json" not in self.zf["save"].namelist():
+                with self.zf["save"].open("summary.json", "w", force_zip64=True) as fp:
+                    summary = {"columns": {
+                        "detection": list(self.detections_pred.columns),
+                        "image": list(self.image_pred.columns),
+                        }
+                    }
+                    summary_bytes = json.dumps(summary, ensure_ascii=False, indent=4).encode(
+                        'utf-8')
+                    fp.write(summary_bytes)
+            if not self.detections_pred.empty:
+                with self.zf["save"].open(f"{self.video_id}.pkl", "w", force_zip64=True) as fp:
+                    detections_pred = self.detections_pred[
+                        self.detections_pred.video_id == self.video_id
+                        ]
+                    pickle.dump(detections_pred, fp, protocol=pickle.DEFAULT_PROTOCOL)
+            if not self.image_pred.empty:
+                with self.zf["save"].open(f"{self.video_id}_image.pkl", "w", force_zip64=True) as fp:
+                    image_pred = self.image_pred[
+                        self.image_pred.video_id == self.video_id
+                    ]
+                    pickle.dump(image_pred, fp, protocol=pickle.DEFAULT_PROTOCOL)
+        else:
+            log.info(f"{self.video_id} already exists in {self.save_file} file")
 
     def load(self):
         """
@@ -358,7 +329,6 @@ class TrackerState(AbstractContextManager):
         if self.load_file is not None:
             if f"{self.video_id}.pkl" in self.zf["load"].namelist():
                 with self.zf["load"].open(f"{self.video_id}.pkl", "r") as fp:
-                    print('\n\n\n', [self.load_columns["detection"]], '\n\n\n')
                     video_detections = pickle.load(fp)[self.load_columns["detection"]]
             else:
                 log.info(f"{self.video_id} detections not in pklz file.")

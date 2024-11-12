@@ -8,6 +8,7 @@ log = logging.getLogger(__name__)
 
 class OfflineTrackingEngine(TrackingEngine):
     def video_loop(self, tracker_state, video, video_id):
+        print('Offline Tracking Engine')
         for name, model in self.models.items():
             if hasattr(model, "reset"):
                 model.reset()

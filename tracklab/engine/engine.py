@@ -181,4 +181,12 @@ class TrackingEngine(ABC):
         self.callback(
             f"on_module_step_end", task=task, batch=batch, detections=detections
         )
+        # delete_task = ['PRTReId', 'BPBReIDStrongSORT', 'TVCalib_Segmentation', 'TVCalib']
+        # print(task)
+        # if task == 'TVCalib':
+        #     try:
+        #         detections = detections.drop(columns=['embeddings'])
+        #     except:
+        #         pass
+        #     print(detections.columns)
         return detections, image_pred

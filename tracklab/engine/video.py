@@ -113,7 +113,6 @@ class VideoOnlineTrackingEngine:
             self.callback("on_image_loop_end",
                           image_metadata=metadata, image=image,
                           image_idx=frame_idx, detections=detections)
-
         return detections
 
     def default_step(self, batch: Any, task: str, detections: pd.DataFrame, metadata, **kwargs):
@@ -146,5 +145,6 @@ class VideoOnlineTrackingEngine:
         self.callback(
             f"on_module_step_end", task=task, batch=batch, detections=detections
         )
+        print('online video track')
         return detections
 
