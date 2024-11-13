@@ -31,8 +31,11 @@ class TrackerState(AbstractContextManager):
             compression=zipfile.ZIP_STORED,
             bbox_format=None,
             pipeline=None,
+            cfg =None,
+            **kwargs
     ):
         self.pipeline = pipeline or {}
+        self.cfg = cfg
         self.video_metadatas = tracking_set.video_metadatas
         self.image_metadatas = tracking_set.image_metadatas
         self.image_gt = tracking_set.image_gt
@@ -306,6 +309,34 @@ class TrackerState(AbstractContextManager):
     #                 pickle.dump(image_pred, fp, protocol=pickle.DEFAULT_PROTOCOL)
     #     else:
     #         log.info(f"{self.video_id} already exists in {self.save_file} file")
+    # def save(self, filename=None):
+    #     if self.save_file is None and filename is None:
+    #         return
+    #     if filename is not None:
+    #         self.save_file = Path(filename)
+    #     if self.video_id is None:
+    #         return
+
+    #     # 从 detections_pred 中筛选并选择需要的列
+    #     detections_pred = self.detections_pred.loc[
+    #         self.detections_pred.video_id == self.video_id,
+    #         ['image_id', 'bbox_pitch']
+    #     ]
+
+    #     # 检查是否缺少所需的列
+    #     required_columns = ['image_id', 'bbox_pitch']
+    #     missing_columns = [col for col in required_columns if col not in detections_pred.columns]
+    #     if missing_columns:
+    #         log.error(f"Missing columns in detections_pred: {missing_columns}")
+    #         return
+
+    #     # 确保保存的文件夹存在
+    #     self.save_file.parent.mkdir(parents=True, exist_ok=True)
+
+    #     # 保存为 JSON 文件
+    #     json_file = self.save_file.with_suffix('.json')
+    #     detections_pred.to_json(json_file, orient='records', lines=True)
+    #     log.info(f"Saved detections_pred to {json_file}")
     def save(self, filename=None):
         if self.save_file is None and filename is None:
             return
@@ -327,11 +358,33 @@ class TrackerState(AbstractContextManager):
             log.error(f"Missing columns in detections_pred: {missing_columns}")
             return
 
-        # 确保保存的文件夹存在
-        self.save_file.parent.mkdir(parents=True, exist_ok=True)
+        # 获取数据集的根目录
+        dataset_root = Path(self.cfg.dataset.dataset_path)
+        if not dataset_root.exists():
+            log.error(f"Dataset root directory does not exist: {dataset_root}")
+            return
+
+        # 获取当前视频的原始文件路径
+        video_info = self.video_metadatas.loc[self.video_id]
+        original_video_path = Path(video_info.loc['name'])
+
+        # 计算相对于数据集根目录的相对路径
+        try:
+            relative_video_path = original_video_path.relative_to(dataset_root)
+        except ValueError:
+            log.error(f"Video path {original_video_path} is not under dataset root {dataset_root}")
+            return
+
+        # 构建保存 JSON 文件的目标路径
+        target_dir = dataset_root / relative_video_path.parent
+
+        # 确保目录存在
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        # 定义 JSON 文件的完整路径
+        json_file = target_dir / f"{self.video_id}_imageid_bboxpitch.json"
 
         # 保存为 JSON 文件
-        json_file = self.save_file.with_suffix('.json')
         detections_pred.to_json(json_file, orient='records', lines=True)
         log.info(f"Saved detections_pred to {json_file}")
 

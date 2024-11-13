@@ -45,6 +45,7 @@ def main(cfg):
 
     # Instantiate all modules
     tracking_dataset = instantiate(cfg.dataset)
+    # 在主函数中
     evaluator = instantiate(cfg.eval, tracking_dataset=tracking_dataset)
 
     modules = []
@@ -75,10 +76,12 @@ def main(cfg):
                 raise KeyError(f"Trying to access a '{split_name}' split of the dataset that is not available. Available splits are {list(tracking_dataset.sets.keys())}. Make sure this split name is correct or is available in the dataset folder.")
 
             log.info(f"Starting tracking operation on '{split_name}' set.")
-
             # Init tracker state and tracking engine
             tracking_set = tracking_dataset.sets[split_name]
+            print(tracking_set.video_metadatas.loc[tracking_set.video_metadatas['id']==3])
             tracker_state = TrackerState(tracking_set, pipeline=pipeline, **cfg.state)
+            # tracker_state = TrackerState(tracking_set, pipeline=pipeline, **cfg.state)
+            tracker_state.cfg = cfg
             tracking_engine = instantiate(
                 cfg.engine,
                 modules=pipeline,
