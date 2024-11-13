@@ -80,8 +80,8 @@ def main(cfg):
             tracking_set = tracking_dataset.sets[split_name]
             print(tracking_set.video_metadatas.loc[tracking_set.video_metadatas['id']==3])
             tracker_state = TrackerState(tracking_set, pipeline=pipeline, **cfg.state)
-            # tracker_state = TrackerState(tracking_set, pipeline=pipeline, **cfg.state)
             tracker_state.cfg = cfg
+            tracker_state.eval_name = split_name
             tracking_engine = instantiate(
                 cfg.engine,
                 modules=pipeline,
@@ -100,8 +100,8 @@ def main(cfg):
 
             # 所有视频处理完成后，保存 tracker_state 并调用提取函数
             if tracker_state.save_file is not None:
-                tracker_state.save(tracker_state.save_file)
-                log.info(f"Saved state at : {tracker_state.save_file.resolve()}")
+                tracker_state.save()
+                # log.info(f"Saved state at : {tracker_state.save_file.resolve()}")
             #     # 调用提取和删除函数
             #     extract_image_id_and_bbox_pitch_from_pklz(cfg)
 

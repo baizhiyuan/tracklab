@@ -26,6 +26,7 @@ class TrackerState(AbstractContextManager):
             load_file=None,
             json_file=None,  # TODO merge with above behavior
             save_file=None,
+            eval_name=None,
             load_from_groundtruth=False,
             load_from_public_dets=False,
             compression=zipfile.ZIP_STORED,
@@ -36,6 +37,7 @@ class TrackerState(AbstractContextManager):
     ):
         self.pipeline = pipeline or {}
         self.cfg = cfg
+        self.eval_name = eval_name
         self.video_metadatas = tracking_set.video_metadatas
         self.image_metadatas = tracking_set.image_metadatas
         self.image_gt = tracking_set.image_gt
@@ -273,75 +275,7 @@ class TrackerState(AbstractContextManager):
                 [self.image_pred, image_metadata]
             )
 
-    # def save(self):
-    #     """
-    #     Saves a pickle in a zip file if the video_id is not yet stored in it.
-    #     """
-    #     if self.save_file is None:
-    #         return
-    #     assert self.video_id is not None, "Save can only be called in a contextmanager"
-    #     assert (
-    #             self.detections_pred is not None
-    #     ), "The detections_pred should not be empty when saving"
-    #     if f"{self.video_id}.pkl" not in self.zf["save"].namelist():
-    #         if "summary.json" not in self.zf["save"].namelist():
-    #             with self.zf["save"].open("summary.json", "w", force_zip64=True) as fp:
-    #                 summary = {"columns": {
-    #                     "detection": list(self.detections_pred.columns),
-    #                     "image": list(self.image_pred.columns),
-    #                     }
-    #                 }
-    #                 summary_bytes = json.dumps(summary, ensure_ascii=False, indent=4).encode(
-    #                     'utf-8')
-    #                 fp.write(summary_bytes)
-    #         if not self.detections_pred.empty:
-    #             # TODO: delete the big file
-    #             with self.zf["save"].open(f"{self.video_id}.pkl", "w", force_zip64=True) as fp:
-    #                 detections_pred = self.detections_pred[
-    #                     self.detections_pred.video_id == self.video_id
-    #                     ]
-    #                 pickle.dump(detections_pred, fp, protocol=pickle.DEFAULT_PROTOCOL)
-    #         if not self.image_pred.empty:
-    #             with self.zf["save"].open(f"{self.video_id}_image.pkl", "w", force_zip64=True) as fp:
-    #                 image_pred = self.image_pred[
-    #                     self.image_pred.video_id == self.video_id
-    #                 ]
-    #                 pickle.dump(image_pred, fp, protocol=pickle.DEFAULT_PROTOCOL)
-    #     else:
-    #         log.info(f"{self.video_id} already exists in {self.save_file} file")
-    # def save(self, filename=None):
-    #     if self.save_file is None and filename is None:
-    #         return
-    #     if filename is not None:
-    #         self.save_file = Path(filename)
-    #     if self.video_id is None:
-    #         return
-
-    #     # 从 detections_pred 中筛选并选择需要的列
-    #     detections_pred = self.detections_pred.loc[
-    #         self.detections_pred.video_id == self.video_id,
-    #         ['image_id', 'bbox_pitch']
-    #     ]
-
-    #     # 检查是否缺少所需的列
-    #     required_columns = ['image_id', 'bbox_pitch']
-    #     missing_columns = [col for col in required_columns if col not in detections_pred.columns]
-    #     if missing_columns:
-    #         log.error(f"Missing columns in detections_pred: {missing_columns}")
-    #         return
-
-    #     # 确保保存的文件夹存在
-    #     self.save_file.parent.mkdir(parents=True, exist_ok=True)
-
-    #     # 保存为 JSON 文件
-    #     json_file = self.save_file.with_suffix('.json')
-    #     detections_pred.to_json(json_file, orient='records', lines=True)
-    #     log.info(f"Saved detections_pred to {json_file}")
-    def save(self, filename=None):
-        if self.save_file is None and filename is None:
-            return
-        if filename is not None:
-            self.save_file = Path(filename)
+    def save(self):
         if self.video_id is None:
             return
 
@@ -366,27 +300,39 @@ class TrackerState(AbstractContextManager):
 
         # 获取当前视频的原始文件路径
         video_info = self.video_metadatas.loc[self.video_id]
-        original_video_path = Path(video_info.loc['name'])
+        original_video_path = Path(video_info['name'])
 
-        # 计算相对于数据集根目录的相对路径
+        # 如果 original_video_path 不是绝对路径，将其与 dataset_root 拼接
+        if not original_video_path.is_absolute():
+            original_video_path = dataset_root / original_video_path
+
+        # 检查是否可以从 dataset_root 获取相对路径
         try:
             relative_video_path = original_video_path.relative_to(dataset_root)
         except ValueError:
             log.error(f"Video path {original_video_path} is not under dataset root {dataset_root}")
             return
 
+        # 提取路径部分
+        parts = relative_video_path.parts
+
+        # 提取 league_dir, season_dir 和 match_dir
+        league_dir = parts[0]  # 第一个部分作为 league_dir
+        season_dir = parts[1]  # 第二个部分作为 season_dir
+
         # 构建保存 JSON 文件的目标路径
-        target_dir = dataset_root / relative_video_path.parent
+        target_dir = dataset_root / f"{self.eval_name}" / league_dir / season_dir
 
         # 确保目录存在
         target_dir.mkdir(parents=True, exist_ok=True)
 
         # 定义 JSON 文件的完整路径
-        json_file = target_dir / f"{self.video_id}_imageid_bboxpitch.json"
+        json_file = target_dir / f"2d_bboxpitch.json"
 
         # 保存为 JSON 文件
         detections_pred.to_json(json_file, orient='records', lines=True)
         log.info(f"Saved detections_pred to {json_file}")
+
 
     def load(self):
         """
