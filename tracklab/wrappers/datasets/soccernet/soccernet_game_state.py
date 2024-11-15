@@ -5,7 +5,6 @@ import zipfile
 import numpy as np
 import pandas as pd
 import json
-
 from pathlib import Path
 from rich import print
 from SoccerNet.Downloader import SoccerNetDownloader
@@ -200,10 +199,12 @@ def dict_to_df_detections(annotation_dict, categories_list):
     
     return df, annotations_pitch_camera, video_level_categories  
 
+
 def read_json_file(file_path):
     with open(file_path, 'r') as file:
         file_json = json.load(file)
     return file_json
+
 
 def video_dir_to_dfs(args):
     season_path = args['dataset_path']
@@ -212,7 +213,6 @@ def video_dir_to_dfs(args):
     season = args['season']
 
     video_folder_path = os.path.join(season_path, video_folder)
-    img_folder_path = os.path.join(video_folder_path, 'img1')
 
     # 获取联赛文件夹路径
     league_path = os.path.dirname(season_path)
@@ -226,54 +226,73 @@ def video_dir_to_dfs(args):
     with open(sequences_info_path, 'r') as f:
         sequences_info = json.load(f)
 
-    # 提取对应联赛的比赛信息
-    match_entries = sequences_info.get(league, [])
+    # 初始化结果列表，用于存储多个子视频数据
+    results = []
 
-    # 构建匹配名称
-    match_name = f"{season}/{video_folder}"
-
-    # 找到与当前视频文件夹对应的比赛条目
-    match_entry = next(
-        (entry for entry in match_entries if entry['name'] == match_name),
-        None
-    )
-
-    if match_entry is None:
-        # 未找到，记录警告
-        log.warning(f"未找到视频文件夹 {match_name} 的序列信息")
+    # 遍历每个视频子目录（如 1_224p 和 2_224p）
+    if not os.path.isdir(video_folder_path):
         return None
 
-    video_id = str(match_entry['id'])
-    nframes = match_entry['n_frames']
+    video_subdirs = [d for d in os.listdir(video_folder_path) if os.path.isdir(os.path.join(video_folder_path, d))]
 
-    # 创建 video_metadata
-    video_metadata = {
-        'id': video_id,
-        'name': match_entry['name'],
-        'nframes': nframes,
-    }
+    for video_subdir in video_subdirs:
+        subdir_path = os.path.join(video_folder_path, video_subdir)
+        img_folder_path = os.path.join(subdir_path, 'img1')
 
-    # 创建 image_metadata
-    nframes = int(nframes)
-    img_metadata_df = pd.DataFrame({
-        'frame': [i for i in range(0, nframes)],
-        'id': [f"{video_id}{i:06d}" for i in range(1, nframes + 1)],
-        'video_id': video_id,
-        'file_path': [os.path.join(img_folder_path, f'{i:06d}.jpg') for i in range(1, nframes + 1)],
-    })
+        if not os.path.exists(img_folder_path):
+            log.warning(f"在 {subdir_path} 中未找到 'img1' 文件夹。")
+            continue
 
-    # 没有检测数据，设置为 None
-    detections_df = None
-    annotations_pitch_camera_df = None
-    video_level_categories = []
+        # 构建匹配名称，包括视频子目录
+        match_name = f"{season}/{video_folder}/{video_subdir}"
 
-    return {
-        "video_metadata": video_metadata,
-        "image_metadata": img_metadata_df,
-        "detections": detections_df,
-        "annotations_pitch_camera": annotations_pitch_camera_df,
-        "video_level_categories": video_level_categories,
-    }
+        # 提取对应联赛的比赛信息
+        match_entries = sequences_info.get(league, [])
+        # 找到与当前视频文件夹对应的比赛条目
+        match_entry = next(
+            (entry for entry in match_entries if entry['name'] == match_name),
+            None
+        )
+
+        if match_entry is None:
+            # 未找到，记录警告
+            log.warning(f"未找到视频文件夹 {match_name} 的序列信息。")
+            continue
+
+        video_id = str(match_entry['id'])
+        nframes = match_entry['n_frames']
+
+        # 创建 video_metadata
+        video_metadata = {
+            'id': video_id,
+            'name': match_entry['name'],
+            'nframes': nframes,
+        }
+
+        # 创建 image_metadata
+        nframes = int(nframes)
+        img_metadata_df = pd.DataFrame({
+            'frame': list(range(0, nframes)),
+            'id': [f"{video_id}{i:06d}" for i in range(1, nframes + 1)],
+            'video_id': video_id,
+            'file_path': [os.path.join(img_folder_path, f'{i:06d}.jpg') for i in range(1, nframes + 1)],
+        })
+
+        # 没有检测数据，设置为 None
+        detections_df = None
+        annotations_pitch_camera_df = None
+        video_level_categories = []
+
+        results.append({
+            "video_metadata": video_metadata,
+            "image_metadata": img_metadata_df,
+            "detections": detections_df,
+            "annotations_pitch_camera": annotations_pitch_camera_df,
+            "video_level_categories": video_level_categories,
+        })
+
+    return results if results else None
+
 
 def load_set(dataset_path, nvid=-1, vids_filter_set=None):
     video_metadatas_list = []
@@ -315,14 +334,19 @@ def load_set(dataset_path, nvid=-1, vids_filter_set=None):
             }
             args_list.append(args)
 
-        pool = Pool()
-        for result in progress(pool.imap_unordered(video_dir_to_dfs, args_list), total=len(args_list), desc=f"加载 '{league_name}/{season}' 赛季的比赛"):
-            if result is not None:
-                video_metadatas_list.append(result["video_metadata"])
-                image_metadata_list.append(result["image_metadata"])
-                detections_list.append(result["detections"])
-                annotations_pitch_camera_list.append(result["annotations_pitch_camera"])
-                categories_list += result["video_level_categories"]
+        with Pool() as pool:
+            for result_set in progress(pool.imap_unordered(video_dir_to_dfs, args_list), total=len(args_list), desc=f"加载 '{league_name}/{season}' 赛季的比赛"):
+                if result_set is None:
+                    continue
+                for result in result_set:
+                    if result is not None:
+                        video_metadatas_list.append(result["video_metadata"])
+                        image_metadata_list.append(result["image_metadata"])
+                        if result["detections"] is not None:
+                            detections_list.append(result["detections"])
+                        if result["annotations_pitch_camera"] is not None:
+                            annotations_pitch_camera_list.append(result["annotations_pitch_camera"])
+                        categories_list += result["video_level_categories"]
 
     if len(video_metadatas_list) == 0:
         raise ValueError(f"在联赛 '{league_name}' 中未找到任何比赛。请检查您的数据集路径和结构。")
@@ -354,6 +378,7 @@ def load_set(dataset_path, nvid=-1, vids_filter_set=None):
         detections,
         image_gt,
     )
+
 
 def download_dataset(dataset_path, splits=("train", "valid", "test")):
     mySoccerNetDownloader = SoccerNetDownloader(LocalDirectory=str(dataset_path))
