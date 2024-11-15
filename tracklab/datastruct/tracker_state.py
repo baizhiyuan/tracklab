@@ -317,11 +317,12 @@ class TrackerState(AbstractContextManager):
         parts = relative_video_path.parts
 
         # 提取 league_dir, season_dir 和 match_dir
-        league_dir = parts[0]  # 第一个部分作为 league_dir
-        season_dir = parts[1]  # 第二个部分作为 season_dir
+        season_dir = parts[0]    # 第一个部分作为 season_dir
+        match_dir = parts[1]     # 第二个部分作为 match_dir
+        video_subdir = parts[2]  # 第三个部分作为 video_subdir (例如 '1_224p' 或 '2_224p')
 
         # 构建保存 JSON 文件的目标路径
-        target_dir = dataset_root / f"{self.eval_name}" / league_dir / season_dir
+        target_dir = dataset_root / f"{self.eval_name}" / season_dir / match_dir / video_subdir
 
         # 确保目录存在
         target_dir.mkdir(parents=True, exist_ok=True)
