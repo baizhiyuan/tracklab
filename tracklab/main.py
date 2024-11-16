@@ -42,9 +42,11 @@ def main(cfg):
     run_dir = Path(hydra_cfg.run.dir)
     log.info(f"Hydra run directory: {run_dir}")
     log.info(f"State save file: {cfg.state.save_file}")
+    log.info(f"sequences_info_filename: {cfg.dataset.sequences_info_filename}")
 
     # Instantiate all modules
-    tracking_dataset = instantiate(cfg.dataset)
+    # tracking_dataset = instantiate(cfg.dataset)
+    tracking_dataset = instantiate(cfg.dataset, sequences_info_filename=cfg.dataset.sequences_info_filename)
     # 在主函数中
     evaluator = instantiate(cfg.eval, tracking_dataset=tracking_dataset)
 

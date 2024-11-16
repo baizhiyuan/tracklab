@@ -22,6 +22,7 @@ class SoccerNetGameState(TrackingDataset):
                  dataset_path: str,
                  nvid: int = -1,
                  vids_dict: dict = None,
+                 sequences_info_filename: str = 'sequences_info.json',
                  *args, **kwargs):
         self.dataset_path = Path(dataset_path)
         # if not self.dataset_path.exists():
@@ -39,7 +40,8 @@ class SoccerNetGameState(TrackingDataset):
             league_path = self.dataset_path / league
             if not league_path.exists():
                 continue
-            sets[league] = load_set(str(league_path), nvid, vids_dict.get(league))
+            # sets[league] = load_set(str(league_path), nvid, vids_dict.get(league))
+            sets[league] = load_set(str(league_path), nvid, vids_dict.get(league), sequences_info_filename=sequences_info_filename)
 
         # Initialize TrackingDataset with the sets
         super().__init__(dataset_path, sets, nvid=-1, vids_dict=None, *args, **kwargs)
@@ -214,13 +216,16 @@ def video_dir_to_dfs(args):
 
     video_folder_path = os.path.join(season_path, video_folder)
 
+    # 便于输入指定的 json 文件
+    sequences_info_filename = args.get('sequences_info_filename', 'sequences_info.json')
+
     # 获取联赛文件夹路径
     league_path = os.path.dirname(season_path)
 
     # 读取 sequences_info.json
-    sequences_info_path = os.path.join(league_path, 'sequences_info.json')
+    sequences_info_path = os.path.join(league_path, sequences_info_filename)
     if not os.path.exists(sequences_info_path):
-        log.warning(f"在 {league_path} 中未找到 'sequences_info.json'。")
+        log.warning(f"在 {league_path} 中未找到 'sequences_info_filename'。")
         return None
 
     with open(sequences_info_path, 'r') as f:
@@ -255,8 +260,8 @@ def video_dir_to_dfs(args):
         )
 
         if match_entry is None:
-            # 未找到，记录警告
-            log.warning(f"未找到视频文件夹 {match_name} 的序列信息。")
+            # 未找到，记录警告，关闭该警告，因为跳过了
+            # log.warning(f"未找到视频文件夹 {match_name} 的序列信息。")
             continue
 
         video_id = str(match_entry['id'])
@@ -294,7 +299,7 @@ def video_dir_to_dfs(args):
     return results if results else None
 
 
-def load_set(dataset_path, nvid=-1, vids_filter_set=None):
+def load_set(dataset_path, nvid=-1, vids_filter_set=None, sequences_info_filename='sequences_info.json'):
     video_metadatas_list = []
     image_metadata_list = []
     annotations_pitch_camera_list = []
@@ -331,6 +336,7 @@ def load_set(dataset_path, nvid=-1, vids_filter_set=None):
                 'video_folder': match_folder,
                 'league': league_name,
                 'season': season,
+                'sequences_info_filename': sequences_info_filename  # 传递文件名
             }
             args_list.append(args)
 
