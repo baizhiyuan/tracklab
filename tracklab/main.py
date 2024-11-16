@@ -18,11 +18,7 @@ from tracklab.datastruct import TrackerState
 from tracklab.pipeline import Pipeline
 from tracklab.utils import wandb
 from omegaconf import DictConfig
-
-# 确保 tracklab 模块路径已添加
-sys.path.append("/garage/projects/video-LLM/soccernet_bzy")  # 主项目路径
-sys.path.append("/garage/projects/video-LLM/soccernet_bzy/sn-gamestate/plugins/calibration")  # 主项目路径
-sys.path.append("/garage/projects/video-LLM/soccernet_bzy/tracklab")  # tracklab 路径
+from torch.cuda.amp import autocast, GradScaler
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
 log = logging.getLogger(__name__)
@@ -33,7 +29,6 @@ warnings.filterwarnings("ignore")
 @hydra.main(version_base=None, config_path="pkg://tracklab.configs", config_name="config")
 def main(cfg):
     device = init_environment(cfg)
-
     # 设置CuDNN加速
     torch.backends.cudnn.benchmark = True
 
@@ -91,97 +86,24 @@ def main(cfg):
             )
 
             # 调整批量大小，避免显存溢出
-            adjust_batch_size(tracker_state, device)
-
+            # adjust_batch_size(tracker_state, device)
+            # 清空 GPU 缓存
+            torch.cuda.empty_cache()
             # Run tracking and visualization
             tracking_engine.track_dataset()
+
             # Evaluation
             evaluate(cfg, evaluator, tracker_state)
-            
             log.info(f"Tracking operation on '{split_name}' set complete.")
 
             # 所有视频处理完成后，保存 tracker_state 并调用提取函数
             if tracker_state.save_file is not None:
                 tracker_state.save()
                 # log.info(f"Saved state at : {tracker_state.save_file.resolve()}")
-            #     # 调用提取和删除函数
-            #     extract_image_id_and_bbox_pitch_from_pklz(cfg)
 
     close_environment()
 
     return 0
-
-
-def extract_image_id_and_bbox_pitch_from_pklz(cfg):
-    """
-    根据配置文件中的路径，读取 pklz 文件，提取所有视频的 image_id 和 bbox_pitch, 保存为 json 文件，然后删除该 pklz 文件。
-    """
-    import zipfile
-    import pickle
-    import json
-    import os
-    from pathlib import Path
-    from hydra.core.hydra_config import HydraConfig
-
-    log.info("Starting extract_image_id_and_bbox_pitch_from_pklz function.")
-
-    # 获取 Hydra 运行目录
-    hydra_cfg = HydraConfig.get()
-    run_dir = Path(hydra_cfg.run.dir)
-    log.info(f"Run directory: {run_dir}")
-
-    pklz_file_path = run_dir / cfg.state.save_file
-    log.info(f"pklz file path: {pklz_file_path}")
-
-    if not pklz_file_path.exists():
-        log.error(f"pklz file not found at {pklz_file_path}")
-        return
-
-    try:
-        # 打开 pklz 文件
-        with zipfile.ZipFile(pklz_file_path, 'r') as zf:
-            namelist = zf.namelist()
-            log.info(f"Files inside pklz: {namelist}")
-            # 找到所有的 detections pkl 文件，通常命名为 '{video_id}.pkl'
-            pkl_files = [name for name in namelist if name.endswith('.pkl') and not name.endswith('_image.pkl') and name != 'summary.json']
-            log.info(f"Detection pkl files: {pkl_files}")
-
-            all_data = []
-            for pkl_file in pkl_files:
-                log.info(f"Processing file: {pkl_file}")
-                with zf.open(pkl_file, 'r') as fp:
-                    detections_pred = pickle.load(fp)
-                    log.info(f"detections_pred columns: {detections_pred.columns}")
-
-                    # 检查是否包含所需的列
-                    if 'image_id' in detections_pred.columns and 'bbox_pitch' in detections_pred.columns:
-                        # 提取 image_id 和 bbox_pitch
-                        data_to_save = detections_pred[['image_id', 'bbox_pitch']].to_dict(orient='records')
-                        all_data.extend(data_to_save)
-                    else:
-                        log.warning(f"'image_id' or 'bbox_pitch' not found in {pkl_file}")
-
-        # 保存为一个整体的 JSON 文件
-        if all_data:
-            json_file_name = "all_videos_imageid_bboxpitch.json"
-            json_file_path = run_dir / json_file_name
-            log.info(f"Saving JSON to {json_file_path}")
-            with open(json_file_path, 'w') as json_fp:
-                json.dump(all_data, json_fp, indent=4)
-            log.info(f"Saved image_id and bbox_pitch to {json_file_path}")
-        else:
-            log.warning("No data found to save.")
-
-    except Exception as e:
-        log.error(f"Error reading pklz file: {e}")
-        return
-
-    # 删除 pklz 文件
-    try:
-        os.remove(pklz_file_path)
-        log.info(f"Deleted pklz file {pklz_file_path}")
-    except Exception as e:
-        log.error(f"Error deleting pklz file: {e}")
 
 
 def set_sharing_strategy():
@@ -232,7 +154,7 @@ def evaluate(cfg, evaluator, tracker_state):
         )
 
 
-def adjust_batch_size(tracker_state, device):
+def adjust_batch_size(tracker_state, device, reduce=False):
     """
     通过尝试不同的批处理大小来避免显存溢出。如果遇到 OOM 错误，将批处理大小减半并重试。
     """
@@ -240,26 +162,37 @@ def adjust_batch_size(tracker_state, device):
         for module in tracker_state.pipeline.models:
             if hasattr(module, 'batch_size'):
                 original_batch_size = module.batch_size
-                current_batch_size = original_batch_size
+                current_batch_size = module.batch_size
 
-                # 尝试不断减小批处理大小，直到不发生 OOM 错误
-                while current_batch_size > 0:
+                if reduce:
+                    current_batch_size = max(1, current_batch_size // 2)
+                else:
+                    # 初始调整，可以基于可用显存进行估算
                     try:
-                        # 在不实际运行模型的情况下，很难真实测试 batch_size，因此这里仅做模拟检查或加载一次数据
-                        # 如果您有预加载数据或特定模块初始化的步骤，可以在此处对它们执行
-                        log.info(f"Testing module {module.__class__.__name__} with batch_size={current_batch_size}")
-                        break  # 假设此处的测试没有OOM错误，跳出循环
-                    except RuntimeError as e:
-                        if 'out of memory' in str(e).lower():
-                            log.warning(f"OOM encountered for module {module.__class__.__name__} with batch_size={current_batch_size}. Trying smaller batch_size.")
-                            current_batch_size //= 2
-                            torch.cuda.empty_cache()  # 清空缓存，以便更准确地测试可用显存
-                        else:
-                            raise e
-                if current_batch_size == 0:
-                    current_batch_size = 1  # 至少保证batch_size为1
+                        # 获取可用显存
+                        total_memory = torch.cuda.get_device_properties(0).total_memory
+                        reserved_memory = torch.cuda.memory_reserved(0)
+                        allocated_memory = torch.cuda.memory_allocated(0)
+                        available_memory = total_memory - (reserved_memory + allocated_memory)
+                        log.info(f"Total GPU memory: {total_memory / (1024 ** 3):.2f} GB")
+                        log.info(f"Reserved GPU memory: {reserved_memory / (1024 ** 3):.2f} GB")
+                        log.info(f"Allocated GPU memory: {allocated_memory / (1024 ** 3):.2f} GB")
+                        log.info(f"Available GPU memory: {available_memory / (1024 ** 3):.2f} GB")
+
+                        # 根据可用显存，计算允许的最大批量大小
+                        approximate_memory_per_sample = 40 * 1024 * 1024  # 40MB
+                        max_allowed_batch_size = int(available_memory / approximate_memory_per_sample)
+                        max_allowed_batch_size = max(1, max_allowed_batch_size)  # 保证至少为1
+                        log.info(f"Calculated max allowed batch size: {max_allowed_batch_size}")
+
+                        # 为了避免某些模块的 batch_size 太大，可以设置一个合理的上限
+                        current_batch_size = min(original_batch_size, max_allowed_batch_size)
+                    except Exception as e:
+                        log.error(f"Failed to calculate max allowed batch size: {e}")
+                        current_batch_size = original_batch_size  # 使用原始批量大小
+
                 if current_batch_size < original_batch_size:
-                    log.warning(f"Reduced batch size for module {module.__class__.__name__} from {original_batch_size} to {current_batch_size}.")
+                    log.warning(f"Reducing batch size for module {module.__class__.__name__} from {original_batch_size} to {current_batch_size}.")
                 module.batch_size = current_batch_size
                 log.info(f"Set batch size to {current_batch_size} for module {module.__class__.__name__}")
     else:
@@ -268,6 +201,8 @@ def adjust_batch_size(tracker_state, device):
             if hasattr(module, 'batch_size'):
                 module.batch_size = 1
                 log.info(f"Set batch size to 1 for module {module.__class__.__name__} on CPU")
+
+
 
 
 if __name__ == "__main__":
