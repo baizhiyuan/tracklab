@@ -52,4 +52,4 @@ def split_sequences_info_files(video_bzy_dir, num_splits=16):
 video_bzy_dir = "/garage#2/projects/data/video_fps_1"
 
 # 调用函数，将 sequences_info.json 拆分成 16 个部分
-split_sequences_info_files(video_bzy_dir, num_splits=16)
+split_sequences_info_files(video_bzy_dir, num_splits=128)

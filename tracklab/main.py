@@ -19,6 +19,7 @@ from tracklab.pipeline import Pipeline
 from tracklab.utils import wandb
 from omegaconf import DictConfig
 from torch.cuda.amp import autocast, GradScaler
+import gc
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
 log = logging.getLogger(__name__)
@@ -100,6 +101,16 @@ def main(cfg):
             if tracker_state.save_file is not None:
                 tracker_state.save()
                 # log.info(f"Saved state at : {tracker_state.save_file.resolve()}")
+                # 显式删除变量
+                del tracking_engine
+                del tracker_state
+                del tracking_set
+                # del pipeline
+                # del modules
+
+                # 清理垃圾和 CUDA 缓存
+                gc.collect()
+                torch.cuda.empty_cache()
 
     close_environment()
 

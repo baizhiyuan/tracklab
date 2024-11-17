@@ -13,6 +13,7 @@ from pathlib import Path
 
 from tracklab.datastruct.tracking_dataset import TrackingSet
 from tracklab.utils.coordinates import generate_bbox_from_keypoints, ltrb_to_ltwh
+from datetime import datetime
 
 import logging
 
@@ -326,9 +327,12 @@ class TrackerState(AbstractContextManager):
 
         # 确保目录存在
         target_dir.mkdir(parents=True, exist_ok=True)
+         # 获取当前时间戳，格式为 YYYYMMDD_HHMMSS
+        current_timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')  # 例如：20240
 
         # 定义 JSON 文件的完整路径
-        json_file = target_dir / f"2d_bboxpitch.json"
+        # json_file = target_dir / f"2d_bboxpitch.json"
+        json_file = target_dir / f"2d_bboxpitch_{current_timestamp}.json"
 
         # 保存为 JSON 文件
         detections_pred.to_json(json_file, orient='records', lines=True)
